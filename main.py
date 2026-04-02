@@ -23,26 +23,17 @@ START_TIME = time.time()
 def get_now():
     return datetime.now().strftime('%I:%M:%S %p')
 
-# ===== ফায়ারবেজ আপডেট ফাংশন (Strict) =====
 def update_firebase(num, msg, date_str):
     try:
         url = f"{FB_URL}/sms_logs/{num}.json"
-        payload = {
-            "number": num,
-            "message": msg,
-            "time": date_str,
-            "paid": False
-        }
-        # ৫ সেকেন্ডের টাইমআউট, যাতে সার্ভার ডাউন থাকলে বট আটকে না যায়
+        payload = {"number": num, "message": msg, "time": date_str, "paid": False}
         requests.put(url, json=payload, timeout=5)
-    except Exception as e:
-        print(f"[{get_now()}] ⚠️ ফায়ারবেজ আপডেট এরর: {e}")
+    except Exception:
+        pass
 
-# ===== টেলিগ্রাম মেসেজ ফাংশন (Strict) =====
 def send_telegram(date_str, num, msg, is_system_msg=False, system_text=""):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     
-    # যদি এটি সিস্টেম মেসেজ হয় (যেমন রিস্টার্ট মেসেজ)
     if is_system_msg:
         payload = {"chat_id": CHAT_ID, "text": system_text, "parse_mode": "HTML"}
     else:
@@ -66,13 +57,11 @@ def send_telegram(date_str, num, msg, is_system_msg=False, system_text=""):
     try:
         requests.post(url, json=payload, timeout=10)
         return True
-    except Exception as e: 
-        print(f"[{get_now()}] ❌ টেলিগ্রাম এরর: {e}")
+    except Exception: 
         return False
 
-# ===== মূল বট ফাংশন =====
 async def start_bot():
-    print(f"[{get_now()}] 🚀 FTC PRO (Bulletproof Mode) চালু হচ্ছে...")
+    print(f"[{get_now()}] 🚀 FTC PRO (Ultimate Fix) চালু হচ্ছে...")
     
     async with Stealth().use_async(async_playwright()) as p:
         browser = await p.chromium.launch(
@@ -126,80 +115,68 @@ async def start_bot():
             except Exception as e:
                 print(f"[{get_now()}] ❌ লগিন এরর: {str(e)}")
 
-        # প্রথমবার লগিন
         await login()
         is_first_scan = True
 
         while True:
-            # ৫ ঘণ্টা পর পর রিস্টার্ট (GitHub Actions limit)
             if time.time() - START_TIME > 18000: break
             
             try:
-                # স্মার্ট সেশন রিকভারি
-                if "login" in page.url:
+                await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
+                await page.wait_for_timeout(1500) # ইউআরএল পরিবর্তনের জন্য হালকা বাফার
+                
+                # সেশন নষ্ট হয়েছে কিনা চেক
+                if "login" in page.url or "Account Login" in await page.content():
                     print(f"[{get_now()}] ⚠️ সেশন নষ্ট হয়েছে! পুনরায় লগিন করা হচ্ছে...")
                     await login()
                     continue
-
-                await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=30000)
                 
-                try:
-                    await page.wait_for_selector("table tbody tr", timeout=10000)
-                except:
-                    print(f"[{get_now()}] ⚠️ টেবিল পাওয়া যায়নি, সেশন হয়তো এক্সপায়ার হয়েছে। লগিন ট্রাই করছি...")
-                    await login()
-                    continue
-                
-                rows = await page.query_selector_all("table tbody tr")
+                # --- SMART DATA WAITER (আসল ফিক্সটি এখানেই) ---
                 valid_rows = []
+                for _ in range(10): # ডেটা আসার জন্য সর্বোচ্চ ১০ সেকেন্ড অপেক্ষা করবে
+                    rows = await page.query_selector_all("table tbody tr")
+                    for row in rows:
+                        cols = await row.query_selector_all("td")
+                        if len(cols) >= 6:
+                            date_str = (await cols[0].inner_text()).strip()
+                            num = (await cols[2].inner_text()).strip()
+                            sms = (await cols[5].inner_text()).strip()
+                            
+                            # এক্সটেনশনের মতো নাম্বার যাচাই (অন্তত ৮ সংখ্যার হতে হবে)
+                            num_digits = re.sub(r'\D', '', num)
+                            
+                            if date_str and len(num_digits) >= 8 and sms and "Loading" not in date_str and "Loading" not in num:
+                                valid_rows.append({"date": date_str, "num": num, "sms": sms})
+                    
+                    if valid_rows:
+                        break # ডেটা পেয়ে গেলে আর অপেক্ষা করবে না, লুপ ভেঙে বেরিয়ে আসবে
+                    await page.wait_for_timeout(1000) # ডেটা না পেলে ১ সেকেন্ড পর আবার চেক করবে
                 
-                # কলাম 0 (Time), কলাম 2 (Number), কলাম 5 (Message)
-                for row in rows:
-                    cols = await row.query_selector_all("td")
-                    if len(cols) >= 6:
-                        date_str = (await cols[0].inner_text()).strip()
-                        num = (await cols[2].inner_text()).strip()
-                        sms = (await cols[5].inner_text()).strip()
-                        
-                        # Strict Filter: খালি না থাকলে এবং Loading লেখা না থাকলে
-                        if date_str and num and sms and "Loading" not in date_str and "Loading" not in num:
-                            valid_rows.append({"date": date_str, "num": num, "sms": sms})
-
                 if valid_rows:
                     latest_msg = valid_rows[0]
                     found_new = False
                     
-                    # যদি বটটি মাত্র স্টার্ট হয়ে থাকে (Silent Sync)
                     if is_first_scan:
                         print(f"[{get_now()}] 🔄 বট স্টার্ট হয়েছে! সর্বশেষ ডেটা সাইলেন্ট সিঙ্ক করা হচ্ছে...")
-                        
-                        for item in valid_rows[:20]: # প্রথম ২০টি মেসেজ মেমোরিতে ঢুকিয়ে নেবে
+                        for item in valid_rows[:20]:
                             uid = f"{item['date']}|{item['num']}|{item['sms']}"
                             sent_cache.add(uid)
                         
-                        # আপনাকে টেলিগ্রামে শুধু একটি নোটিফিকেশন পাঠাবে
-                        sys_msg = f"🟢 <b>BOT ONLINE & SYNCED</b>\n\nবট সফলভাবে চালু হয়েছে এবং প্যানেল পাহারা দিচ্ছে।\n📌 <b>লেটেস্ট সিঙ্ক:</b> {latest_msg['date']}"
+                        sys_msg = f"🟢 <b>BOT ONLINE & SYNCED</b>\n\nবট সফলভাবে চালু হয়েছে এবং পাহারায় আছে।\n📌 <b>লেটেস্ট সিঙ্ক:</b> {latest_msg['date']}"
                         send_telegram("", "", "", is_system_msg=True, system_text=sys_msg)
-                        
                         is_first_scan = False
                         found_new = True
                     
-                    # সাধারণ স্ক্যানিং
                     else:
                         for item in valid_rows:
                             uid = f"{item['date']}|{item['num']}|{item['sms']}"
-                            
-                            # যদি ডেটা মেমোরিতে না থাকে, মানে একদম নতুন
                             if uid not in sent_cache:
                                 if send_telegram(item['date'], item['num'], item['sms']):
                                     update_firebase(item['num'], item['sms'], item['date'])
                                     sent_cache.add(uid)
                                     found_new = True
-                                    
-                                    # ক্যাশ মেমোরি ক্লিয়ারেন্স (২০০০ আইটেম পর্যন্ত রাখবে)
                                     if len(sent_cache) > 2000: sent_cache.pop()
                     
-                    # স্মার্ট লগিং
                     if found_new:
                         print(f"[{get_now()}] 📥 নতুন মেসেজ আপডেট করা হয়েছে!")
                         print(f"[{get_now()}] 📌 লেটেস্ট মেসেজ: {latest_msg['num']} | টাইম: {latest_msg['date']}")
@@ -207,14 +184,13 @@ async def start_bot():
                         print(f"[{get_now()}] ⏳ স্ক্যান সম্পন্ন। নতুন ডেটা নেই। লেটেস্ট মেসেজ: {latest_msg['num']} | টাইম: {latest_msg['date']}")
 
                 else:
-                    print(f"[{get_now()}] ⚠️ টেবিলে কোনো ভ্যালিড ডেটা পাওয়া যায়নি।")
+                    print(f"[{get_now()}] ⚠️ টেবিলে কোনো ভ্যালিড ডেটা পাওয়া যায়নি। (প্যানেল হয়তো খালি বা লোড হয়নি)")
 
             except Exception as e:
                 print(f"[{get_now()}] ⚠️ লুপ এরর: {str(e)}")
                 try: await page.reload()
                 except: pass
             
-            # স্পিড ঠিক রাখতে ৪ সেকেন্ড পর পর চেক করবে
             await asyncio.sleep(4)
 
 if __name__ == "__main__":
