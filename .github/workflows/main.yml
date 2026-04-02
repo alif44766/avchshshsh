@@ -34,4 +34,4 @@ jobs:
         CHAT_ID: ${{ secrets.CHAT_ID }}
         MY_USER: ${{ secrets.MY_USER }}
         MY_PASS: ${{ secrets.MY_PASS }}
-      run: python main.py
+      run: python u- main.py
