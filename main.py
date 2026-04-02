@@ -6,7 +6,6 @@ import time
 from datetime import datetime
 from playwright.async_api import async_playwright
 
-# ===== GitHub Secrets থেকে কনফিগারেশন নেওয়া =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 MY_USER = os.getenv("MY_USER")
@@ -42,44 +41,51 @@ def send_telegram(num, msg):
     try:
         requests.post(url, json=payload, timeout=10)
         return True
-    except: return False
+    except Exception as e: 
+        print(f"[{get_now()}] ❌ টেলিগ্রাম এরর: {e}")
+        return False
 
 async def start_bot():
     print(f"[{get_now()}] 🚀 FTC PRO GitHub Actions-এ চালু হচ্ছে...")
     async with async_playwright() as p:
+        print(f"[{get_now()}] 🌐 ব্রাউজার লঞ্চ করা হচ্ছে...")
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
+        print(f"[{get_now()}] ✅ ব্রাউজার রেডি!")
 
         async def login():
             print(f"[{get_now()}] 🔑 লগিন করার চেষ্টা করছি...")
             try:
                 await page.goto(LOGIN_URL, timeout=60000)
+                print(f"[{get_now()}] 📄 পেজ লোড হয়েছে, ক্রেডেনশিয়াল দেওয়া হচ্ছে...")
                 await page.fill('input[name="username"]', MY_USER)
                 await page.fill('input[name="password"]', MY_PASS)
                 content = await page.content()
                 match = re.search(r'What is\s+(\d+)\s*\+\s*(\d+)', content)
                 if match:
                     await page.fill('input[name="ans"]', str(int(match[1]) + int(match[2])))
+                    print(f"[{get_now()}] ✅ ক্যাপচা সলভড!")
                 await page.click("button[type='submit']")
                 await page.wait_for_timeout(5000)
                 print(f"[{get_now()}] 🎉 লগিন সফল!")
             except Exception as e:
-                print(f"[{get_now()}] ❌ লগিন এরর: {e}")
+                print(f"[{get_now()}] ❌ লগিন এরর: {str(e)}")
 
         await login()
 
         while True:
-            # ৫ ঘণ্টা (১৮০০০ সেকেন্ড) হয়ে গেলে বট বন্ধ হবে যাতে নতুন শিডিউল শুরু হতে পারে
             if time.time() - START_TIME > 18000:
                 print(f"[{get_now()}] 🔄 সেশন রিস্টার্টের জন্য বন্ধ হচ্ছে...")
                 break
 
             try:
+                print(f"[{get_now()}] 🔍 প্যানেল স্ক্যান করা হচ্ছে...")
                 if "login" in page.url: await login()
                 await page.goto(TARGET_URL, timeout=60000)
                 await page.wait_for_selector("table tbody tr", timeout=20000)
                 
                 rows = await page.query_selector_all("table tbody tr")
+                found_new = False
                 for row in rows:
                     cols = await row.query_selector_all("td")
                     if len(cols) >= 6:
@@ -90,10 +96,18 @@ async def start_bot():
                         if uid not in sent_cache:
                             if send_telegram(num, sms):
                                 sent_cache.add(uid)
+                                found_new = True
                                 if len(sent_cache) > 500: sent_cache.pop()
-                print(f"[{get_now()}] ⏳ স্ক্যানিং সম্পন্ন। নতুন কোনো ডেটা নেই।")
-            except:
-                await page.reload()
+                if found_new:
+                    print(f"[{get_now()}] 📥 নতুন মেসেজ পাঠানো হয়েছে!")
+                else:
+                    print(f"[{get_now()}] ⏳ স্ক্যানিং সম্পন্ন। নতুন কোনো ডেটা নেই।")
+            except Exception as e:
+                print(f"[{get_now()}] ⚠️ লুপ এরর: {str(e)}")
+                try:
+                    await page.reload()
+                except:
+                    pass
             
             await asyncio.sleep(5)
 
