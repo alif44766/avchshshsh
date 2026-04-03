@@ -15,7 +15,7 @@ MY_PASS = os.getenv("MY_PASS")
 
 TARGET_URL = "http://185.2.83.39/ints/agent/SMSCDRReports"
 LOGIN_URL = "http://185.2.83.39/ints/login"
-# আপনার দেওয়া নতুন ফায়ারবেস ইউআরএল
+# আপনার দেওয়া ফায়ারবেস ইউআরএল
 FB_URL = "https://otp-manager-511ec-default-rtdb.asia-southeast1.firebasedatabase.app/bot"
 
 sent_cache = set()
@@ -25,16 +25,18 @@ def get_now():
     return datetime.now().strftime('%I:%M:%S %p')
 
 def update_firebase(num, msg, date_str):
+    """ফায়ারবেসে ডাটা আপডেট করার ফাংশন"""
     try:
-        # নাম্বার থেকে যেকোনো স্পেস বা ব্র্যাকেট মুছে শুধু সংখ্যা নেওয়া হচ্ছে (ফায়ারবেস এরর ফিক্স)
         clean_num = re.sub(r'\D', '', num)
         url = f"{FB_URL}/sms_logs/{clean_num}.json"
         payload = {"number": num, "message": msg, "time": date_str, "paid": False}
-        requests.put(url, json=payload, timeout=5)
+        response = requests.put(url, json=payload, timeout=8)
+        return response.status_code == 200
     except Exception:
-        pass
+        return False
 
 def send_telegram(date_str, num, msg, is_system_msg=False, system_text=""):
+    """টেলিগ্রামে মেসেজ পাঠানোর ফাংশন"""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     
     if is_system_msg:
@@ -58,53 +60,40 @@ def send_telegram(date_str, num, msg, is_system_msg=False, system_text=""):
         }
         
     try:
-        requests.post(url, json=payload, timeout=10)
-        return True
+        res = requests.post(url, json=payload, timeout=10)
+        return res.status_code == 200
     except Exception: 
         return False
 
 async def start_bot():
-    print(f"[{get_now()}] 🚀 FTC PRO (Ultimate Fix) চালু হচ্ছে...")
+    print(f"[{get_now()}] 🚀 বট চালু হচ্ছে...")
     
     async with Stealth().use_async(async_playwright()) as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--disable-dev-shm-usage", "--no-sandbox"]
-        )
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={'width': 1280, 'height': 720}
-        )
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        context = await browser.new_context(viewport={'width': 1280, 'height': 720})
         page = await context.new_page()
 
         async def login():
-            print(f"[{get_now()}] 🔑 লগিন পেজে প্রবেশ করা হচ্ছে...")
             try:
                 await page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
-                await page.wait_for_timeout(2000)
-
-                # আপনার অরিজিনাল লগিন স্ক্রিপ্ট (কোনো পরিবর্তন করা হয়নি)
+                # আপনার অরিজিনাল লগিন স্ক্রিপ্ট এখানে থাকবে...
                 login_success = await page.evaluate(f"""() => {{
                     try {{
                         const myUser = "{MY_USER}"; const myPass = "{MY_PASS}";
                         let userField, passField, ansField;
-                        
                         document.querySelectorAll('input').forEach(inp => {{
                             let p = (inp.placeholder || "").toLowerCase();
                             if (inp.type === 'password') passField = inp;
                             else if (p.includes('user') || inp.type === 'text') {{ if (!userField && !p.includes('answer')) userField = inp; }}
                             if (p.includes('answer') || (inp.name || "").includes('ans')) ansField = inp;
                         }});
-
                         let match = document.body.innerText.match(/What is\\s+(\\d+)\\s*\\+\\s*(\\d+)/i);
                         let sum = match ? (parseInt(match[1]) + parseInt(match[2])) : "";
-
                         if (userField && passField && ansField && sum !== "") {{
                             userField.value = myUser; passField.value = myPass; ansField.value = sum;
                             userField.dispatchEvent(new Event('input', {{ bubbles: true }}));
                             passField.dispatchEvent(new Event('input', {{ bubbles: true }}));
                             ansField.dispatchEvent(new Event('input', {{ bubbles: true }}));
-
                             for(let b of document.querySelectorAll('button, input[type="submit"]')) {{
                                 if((b.innerText || b.value || "").toLowerCase().includes('login')) {{ b.click(); return true; }}
                             }}
@@ -112,100 +101,70 @@ async def start_bot():
                         return false;
                     }} catch (e) {{ return false; }}
                 }}""")
-
-                if login_success:
-                    print(f"[{get_now()}] ✅ ক্রেডেনশিয়াল দেওয়া হয়েছে। লগিনের অপেক্ষা...")
-                    await page.wait_for_timeout(5000)
-            except Exception as e:
-                print(f"[{get_now()}] ❌ লগিন এরর: {str(e)}")
+                return login_success
+            except: return False
 
         await login()
         is_first_scan = True
 
         while True:
-            if time.time() - START_TIME > 18000: break
-            
             try:
                 await page.goto(TARGET_URL, wait_until="domcontentloaded", timeout=60000)
-                await page.wait_for_timeout(1500) 
+                await page.wait_for_timeout(2000)
                 
-                if "login" in page.url or "Account Login" in await page.content():
-                    print(f"[{get_now()}] ⚠️ সেশন নষ্ট হয়েছে! পুনরায় লগিন করা হচ্ছে...")
+                if "login" in page.url:
                     await login()
                     continue
                 
                 valid_rows = []
-                for _ in range(10): 
-                    rows = await page.query_selector_all("table tbody tr")
-                    for row in rows:
-                        cols = await row.query_selector_all("td")
-                        if len(cols) >= 6:
-                            date_str = (await cols[0].inner_text()).strip()
-                            num = (await cols[2].inner_text()).strip()
-                            sms = (await cols[5].inner_text()).strip()
-                            
-                            num_digits = re.sub(r'\D', '', num)
-                            
-                            if date_str and len(num_digits) >= 8 and sms and "Loading" not in date_str and "Loading" not in num:
-                                valid_rows.append({"date": date_str, "num": num, "sms": sms})
-                    
-                    if valid_rows:
-                        break 
-                    await page.wait_for_timeout(1000) 
+                rows = await page.query_selector_all("table tbody tr")
+                for row in rows:
+                    cols = await row.query_selector_all("td")
+                    if len(cols) >= 6:
+                        d = (await cols[0].inner_text()).strip()
+                        n = (await cols[2].inner_text()).strip()
+                        s = (await cols[5].inner_text()).strip()
+                        if d and len(re.sub(r'\D','',n)) >= 8:
+                            valid_rows.append({"date": d, "num": n, "sms": s})
                 
                 if valid_rows:
-                    latest_msg = valid_rows[0]
-                    found_new = False
-                    
+                    latest = valid_rows[0]
+                    uid = f"{latest['date']}|{latest['num']}|{latest['sms']}"
+
                     if is_first_scan:
-                        print(f"[{get_now()}] 🔄 বট স্টার্ট হয়েছে! লেটেস্ট মেসেজ প্রসেস করা হচ্ছে...")
+                        # প্রথমবার চালুর কনফার্মেশন এবং প্রথম মেসেজ ফায়ার করা
+                        tg_ok = send_telegram(latest['date'], latest['num'], latest['sms'])
+                        fb_ok = update_firebase(latest['num'], latest['sms'], latest['date'])
                         
-                        # ১. বট চালুর সিস্টেম মেসেজ
-                        sys_msg = f"🟢 <b>BOT ONLINE & SYNCED</b>\n\nবট সফলভাবে চালু হয়েছে এবং পাহারায় আছে।\n📌 <b>লেটেস্ট সিঙ্ক:</b> {latest_msg['date']}"
-                        send_telegram("", "", "", is_system_msg=True, system_text=sys_msg)
+                        status_text = "ফায়ার করা হয়েছে এবং গ্রুপে পাঠানো হয়েছে" if (tg_ok and fb_ok) else "সমস্যা: ডাটাবেজ বা টেলিগ্রাম এরর"
+                        print(f"[{get_now()}] 🟢 সর্বশেষ আসা মেসেজ: {latest['sms']}, নাম্বার: {latest['num']}, সময়: {latest['date']} - {status_text}।")
                         
-                        # ২. একদম লেটেস্ট (১ম) মেসেজটি টেলিগ্রামে এবং ফায়ারবেসে পাঠাবে
-                        first_item = valid_rows[0]
-                        uid = f"{first_item['date']}|{first_item['num']}|{first_item['sms']}"
-                        
-                        if send_telegram(first_item['date'], first_item['num'], first_item['sms']):
-                            update_firebase(first_item['num'], first_item['sms'], first_item['date'])
-                            sent_cache.add(uid)
-                            found_new = True
-
-                        # ৩. বাকি পুরনো মেসেজগুলো শুধু ক্যাশে রাখবে (যাতে একসাথে ২০টা মেসেজ গ্রুপে না আসে)
-                        for item in valid_rows[1:20]:
-                            old_uid = f"{item['date']}|{item['num']}|{item['sms']}"
-                            sent_cache.add(old_uid)
-
+                        # বাকিগুলো ক্যাশে ঢুকিয়ে দেওয়া যাতে ডুপ্লিকেট না হয়
+                        for item in valid_rows:
+                            sent_cache.add(f"{item['date']}|{item['num']}|{item['sms']}")
                         is_first_scan = False
                     
+                    elif uid not in sent_cache:
+                        # নতুন কোনো মেসেজ আসলে
+                        tg_ok = send_telegram(latest['date'], latest['num'], latest['sms'])
+                        fb_ok = update_firebase(latest['num'], latest['sms'], latest['date'])
+                        
+                        if tg_ok and fb_ok:
+                            print(f"[{get_now()}] ✅ সর্বশেষ আসা মেসেজ এটি এবং নাম্বার {latest['num']} এবং সময় {latest['date']} - গ্রুপে পাঠানো হয়েছে এবং ডাটাবেজে আপডেট করা হয়েছে।")
+                        else:
+                            print(f"[{get_now()}] ❌ সর্বশেষ আসা মেসেজ এটি এবং নাম্বার {latest['num']} এবং সময় {latest['date']} - গ্রুপে আপডেট করা হয়নি, ডাটাবেজে আপডেট করা হয়নি। সমস্যা: কানেকশন এরর।")
+                        
+                        sent_cache.add(uid)
                     else:
-                        # সাধারণ স্ক্যান (নিচ থেকে উপরে, যাতে সিরিয়াল ঠিক থাকে)
-                        for item in reversed(valid_rows):
-                            uid = f"{item['date']}|{item['num']}|{item['sms']}"
-                            if uid not in sent_cache:
-                                if send_telegram(item['date'], item['num'], item['sms']):
-                                    update_firebase(item['num'], item['sms'], item['date'])
-                                    sent_cache.add(uid)
-                                    found_new = True
-                                    if len(sent_cache) > 2000: sent_cache.pop()
-                    
-                    if found_new:
-                        print(f"[{get_now()}] 📥 নতুন মেসেজ আপডেট করা হয়েছে!")
-                        print(f"[{get_now()}] 📌 লেটেস্ট মেসেজ: {latest_msg['num']} | টাইম: {latest_msg['date']}")
-                    else:
-                        print(f"[{get_now()}] ⏳ স্ক্যান সম্পন্ন। নতুন ডেটা নেই। লেটেস্ট মেসেজ: {latest_msg['num']} | টাইম: {latest_msg['date']}")
+                        # যদি নতুন মেসেজ না থাকে (আপনার চাহিদা অনুযায়ী লগ)
+                        print(f"[{get_now()}] ⏳ সর্বশেষ আসা মেসেজ এটি এবং নাম্বার {latest['num']} এবং সময় {latest['date']} - এখনো গ্রুপে বা ডাটাবেজে নতুন কোনো আপডেট করা হয়নি।")
 
-                else:
-                    print(f"[{get_now()}] ⚠️ টেবিলে কোনো ভ্যালিড ডেটা পাওয়া যায়নি।")
+                if len(sent_cache) > 2000: sent_cache.clear()
 
             except Exception as e:
-                print(f"[{get_now()}] ⚠️ লুপ এরর: {str(e)}")
-                try: await page.reload()
-                except: pass
+                print(f"[{get_now()}] ⚠️ সমস্যা: {str(e)}")
             
-            await asyncio.sleep(4)
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(start_bot())
