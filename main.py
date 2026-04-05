@@ -1,6 +1,8 @@
 import os
+import sys
 import asyncio
 import re
+import signal
 import requests
 import time
 from datetime import datetime
@@ -20,9 +22,12 @@ FB_URL = "https://otp-manager-511ec-default-rtdb.asia-southeast1.firebasedatabas
 ADMIN_LINK = "https://t.me/Xero_Ridoy"
 BOT_LINK = "https://t.me/FTC_SUPER_SMS_BOT"
 
-# ক্যাশ মেমোরি: {"number|sms_text": "last_seen_time"}
-sent_msgs = {}
-START_TIME = time.time()
+# ক্যাশ মেমোরি: পুরনো মেসেজ মনে রাখার জন্য
+seen_messages = set()
+
+# ==========================================
+# হেল্পার ফাংশন
+# ==========================================
 
 def extract_otp(msg):
     match = re.search(r'\b(\d{4,8}|\d{3}-\d{3}|\d{4}\s\d{4})\b', msg)
@@ -31,45 +36,63 @@ def extract_otp(msg):
 def parse_dt(d_str):
     try:
         parts = d_str.split(' ')
-        return parts[0][-5:], parts[1] # '04-03', '11:32:11'
+        return parts[0][-5:], parts[1]
     except:
         return "??-??", "??:??:??"
 
-def update_firebase(num, msg, date_str):
+# বটের স্ট্যাটাস (চালু/বন্ধ) গ্রুপে জানানোর ফাংশন
+def send_status_alert(status_msg):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": status_msg, "parse_mode": "HTML"}
     try:
-        clean_num = re.sub(r'\D', '', num)
-        url = f"{FB_URL}/sms_logs/{clean_num}.json"
-        payload = {"number": num, "message": msg, "time": date_str, "paid": False}
-        res = requests.put(url, json=payload, timeout=8)
+        requests.post(url, json=payload, timeout=5)
+    except:
+        pass
+
+# সার্ভার রিস্টার্ট হলে আগের সেশন বন্ধ করার সিগন্যাল
+def handle_shutdown(signum, frame):
+    print("🔴 সিগন্যাল পেয়ে বট বন্ধ হচ্ছে...")
+    send_status_alert("🔴 <b><u>সার্ভার রিস্টার্ট:</u> আগের সেশনটি সফলভাবে বন্ধ করা হয়েছে!</b>\nনতুন সেশন এখনই চালু হবে।")
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, handle_shutdown)
+signal.signal(signal.SIGINT, handle_shutdown)
+
+# ==========================================
+# ডাটাবেজ এবং টেলিগ্রাম সেন্ড লজিক
+# ==========================================
+
+# ফায়ারবেসে সম্পূর্ণ নতুন ইউনিক আইডি দিয়ে ডাটা সেভ করবে (Overwrite হবে না)
+def add_to_firebase(num, msg, date_str, platform):
+    try:
+        url = f"{FB_URL}/sms_logs.json"
+        payload = {"number": num, "platform": platform, "message": msg, "time": date_str, "paid": False}
+        res = requests.post(url, json=payload, timeout=8)
         return res.status_code == 200
     except:
         return False
 
-def send_telegram(date_str, num, msg, otp, is_update=False):
+# টেলিগ্রাম গ্রুপে প্রিমিয়াম ডিজাইনে মেসেজ পাঠানো
+def send_telegram(date_str, num, msg, otp, platform):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    masked = num[:4] + "XXX" + num[-4:] if len(num) > 8 else num
+    masked = num[:4] + "XXXX" + num[-4:] if len(num) > 8 else num
 
-    # হেডার সেট করা (নতুন নাকি আপডেট)
-# স্টাইলিশ হেডার এবং ডিভাইডার
-    header = "🔄 <b><u>ᴜᴘᴅᴀᴛᴇᴅ sᴍs ʀᴇᴄᴇɪᴠᴇᴅ</u></b>" if is_update else "🆕 <b><u>ɴᴇᴡ sᴍs ʀᴇᴄᴇɪᴠᴇᴅ</u></b>"
-    divider = "<b>━━━━━━━━━━━━━━━━━━</b>"
-
-    text = f"{header}\n" \
-           f"{divider}\n\n" \
+    text = f"🌟 <b><u>ɴᴇᴡ sᴍs ᴀʀʀɪᴠᴇᴅ</u></b> 🌟\n" \
+           f"━━━━━━━━━━━━━━━━━━━\n\n" \
+           f"🌐 <b>Platform:</b> <code>{platform}</code>\n" \
            f"🕒 <b>Time:</b> <code>{date_str}</code>\n" \
-           f"📱 <b>Number:</b> \"<code>{masked}</code>\"\n"
+           f"📱 <b>Number:</b> <code>{masked}</code>\n"
     
     if otp != "N/A":
-        text += f"🔑 <b>OTP Code:</b> \"<code>{otp}</code>\"\n"
+        text += f"🔑 <b>OTP Code:</b> <code>{otp}</code>\n"
     
-    text += f"{divider}\n" \
+    text += f"━━━━━━━━━━━━━━━━━━━\n" \
            f"💬 <b>Message:</b>\n" \
-           f"└ <blockquote>\"{msg}\"</blockquote>\n" \
-           f"{divider}"
+           f"<blockquote>{msg}</blockquote>\n" \
+           f"━━━━━━━━━━━━━━━━━━━"
     
     keyboard = []
     if otp != "N/A":
-        # OTP কপি করার জন্য বাটন (টেলিগ্রামে সরাসরি কপি বাটন হিসেবে কাজ করবে)
         keyboard.append([{"text": f"📋 Copy OTP: {otp}", "copy_text": {"text": otp}}])
     
     keyboard.append([
@@ -90,8 +113,13 @@ def send_telegram(date_str, num, msg, otp, is_update=False):
     except: 
         return False
 
+# ==========================================
+# মূল বট লজিক (Scraping & Monitoring)
+# ==========================================
+
 async def start_bot():
     print("🚀 বট চালু হচ্ছে...")
+    send_status_alert("🟢 <b><u>নতুন সেশন চালু হয়েছে:</u> FTC SMS BOT এখন নতুন মেসেজের জন্য প্রস্তুত!</b> 🚀")
     
     async with Stealth().use_async(async_playwright()) as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -101,7 +129,6 @@ async def start_bot():
         async def login():
             try:
                 await page.goto(LOGIN_URL, wait_until="networkidle", timeout=60000)
-                # আপনার অরিজিনাল লগিন স্ক্রিপ্ট...
                 await page.evaluate(f"""() => {{
                     const myUser = "{MY_USER}"; const myPass = "{MY_PASS}";
                     let userField, passField, ansField;
@@ -140,64 +167,55 @@ async def start_bot():
                 
                 valid_rows = []
                 rows = await page.query_selector_all("table tbody tr")
+                
                 for row in rows:
                     cols = await row.query_selector_all("td")
                     if len(cols) >= 6:
-                        d = (await cols[0].inner_text()).strip()
-                        n = (await cols[2].inner_text()).strip()
-                        s = (await cols[5].inner_text()).strip()
+                        d = (await cols[0].inner_text()).strip() # 0 = ডেট
+                        n = (await cols[2].inner_text()).strip() # 2 = নাম্বার
+                        p_form = (await cols[3].inner_text()).strip() # 3 = প্লাটফর্ম
+                        s = (await cols[5].inner_text()).strip() # 5 = মেসেজ
+                        
                         if d and len(re.sub(r'\D','',n)) >= 8:
-                            valid_rows.append({"date": d, "num": n, "sms": s})
+                            valid_rows.append({"date": d, "num": n, "platform": p_form, "sms": s})
                 
                 if valid_rows:
-                    latest = valid_rows[0]
-                    found_update = False
-
                     if is_first_scan:
-                        # প্রথম স্ক্যানে শুধু লেটেস্টটি গ্রুপে দিবে
-                        d_short, t_short = parse_dt(latest['date'])
-                        otp = extract_otp(latest['sms'])
-                        tg = send_telegram(latest['date'], latest['num'], latest['sms'], otp)
-                        fb = update_firebase(latest['num'], latest['sms'], latest['date'])
-                        sent_msgs[f"{latest['num']}|{latest['sms']}"] = latest['date']
-                        
-                        print(f"🆕{d_short}◻️{t_short}◻️: {latest['num']}💬{latest['sms']}\nGrupe {'✅' if tg else '❌'} DB {'✅' if fb else '❌'}\n")
-                        
-                        for item in valid_rows[1:]:
-                            sent_msgs[f"{item['num']}|{item['sms']}"] = item['date']
+                        # প্রথম স্ক্যানে শুধু মেমোরিতে সেভ করবে, গ্রুপে স্প্যাম করবে না
+                        for item in valid_rows:
+                            fingerprint = f"{item['date']}|{item['num']}|{item['sms']}"
+                            seen_messages.add(fingerprint)
                         is_first_scan = False
+                        print("✅ First scan complete. Monitoring for NEW messages only...\n")
                     
                     else:
+                        found_new = False
                         for item in reversed(valid_rows):
-                            uid = f"{item['num']}|{item['sms']}"
+                            fingerprint = f"{item['date']}|{item['num']}|{item['sms']}"
                             d_short, t_short = parse_dt(item['date'])
                             otp = extract_otp(item['sms'])
 
-                            # ১. সম্পূর্ণ নতুন মেসেজ
-                            if uid not in sent_msgs:
-                                tg = send_telegram(item['date'], item['num'], item['sms'], otp, is_update=False)
-                                fb = update_firebase(item['num'], item['sms'], item['date'])
-                                sent_msgs[uid] = item['date']
-                                print(f"🆕{d_short}◻️{t_short}◻️: {item['num']}💬{item['sms']}\nGrupe {'✅' if tg else '❌'} DB {'✅' if fb else '❌'}\n")
-                                found_update = True
-                            
-                            # ২. মেসেজ এক কিন্তু সময় নতুন (গ্রুপ + ডাটাবেজ আপডেট)
-                            elif sent_msgs[uid] != item['date']:
-                                tg = send_telegram(item['date'], item['num'], item['sms'], otp, is_update=True)
-                                fb = update_firebase(item['num'], f"{item['sms']} (Update)", item['date'])
-                                sent_msgs[uid] = item['date']
-                                print(f"🔄{d_short}◻️{t_short}◻️: {item['num']}💬{item['sms']}\nGrupe {'✅' if tg else '❌'} DB {'✅' if fb else '❌'}\n")
-                                found_update = True
+                            # যদি মেসেজটি মেমোরিতে না থাকে (নতুন মেসেজ)
+                            if fingerprint not in seen_messages:
+                                tg = send_telegram(item['date'], item['num'], item['sms'], otp, item['platform'])
+                                fb = add_to_firebase(item['num'], item['sms'], item['date'], item['platform'])
+                                
+                                seen_messages.add(fingerprint)
+                                print(f"🆕 {d_short}◻️{t_short}◻️: [{item['platform']}] {item['num']}💬{item['sms']}\nGroup: {'✅' if tg else '❌'} DB: {'✅' if fb else '❌'}\n")
+                                found_new = True
                         
-                        if not found_update:
+                        if not found_new:
+                            latest = valid_rows[0]
                             d_short, t_short = parse_dt(latest['date'])
-                            otp = extract_otp(latest['sms'])
-                            print(f"🫆{d_short}◻️{t_short}◻️: {latest['num']}💬 {otp} Grupe ✅ DB ✅ ")
+                            print(f"🫆 No new message. Last: {d_short}◻️{t_short}◻️: {latest['num']}")
 
-                if len(sent_msgs) > 2000:
-                    sent_msgs.clear()
+                # মেমোরি অপটিমাইজেশন (২৫০০ মেসেজের পর ক্লিয়ার হবে)
+                if len(seen_messages) > 2500:
+                    seen_messages.clear()
+                    is_first_scan = True 
 
-            except Exception:
+            except Exception as e:
+                print(f"Error: {e}")
                 pass
             
             await asyncio.sleep(4)
