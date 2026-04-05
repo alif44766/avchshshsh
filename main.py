@@ -17,7 +17,7 @@ MY_PASS = os.getenv("MY_PASS")
 
 TARGET_URL = "http://185.2.83.39/ints/agent/SMSCDRReports"
 LOGIN_URL = "http://185.2.83.39/ints/login"
-FB_URL = "https://otp-manager-511ec-default-rtdb.asia-southeast1.firebasedatabase.app/bot"
+FB_URL = "https://bot-pro-bd-default-rtdb.asia-southeast1.firebasedatabase.app/bot"
 
 ADMIN_LINK = "https://t.me/Xero_Ridoy"
 BOT_LINK = "https://t.me/FTC_SUPER_SMS_BOT"
